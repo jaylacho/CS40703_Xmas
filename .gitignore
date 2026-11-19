@@ -1,0 +1,11 @@
+node_modules/
+
+# never commit the API key
+.env
+.env.local
+
+# test output
+tests/results/
+
+.DS_Store
+*.log

@@ -1,0 +1,26 @@
+{
+  "name": "crosscheck",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "CrossCheck: a moderator agent and per-person private agents that help a team brainstorm and reach agreement in a text-chat meeting.",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test:prompts": "tsx tests/run.ts",
+    "test:moderator": "tsx tests/run.ts moderator",
+    "test:personal": "tsx tests/run.ts personal",
+    "simulate": "tsx tests/simulate.ts",
+    "dev:api": "tsx watch server/index.ts",
+    "start": "tsx server/index.ts"
+  },
+  "dependencies": {
+    "tsx": "^4.19.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
