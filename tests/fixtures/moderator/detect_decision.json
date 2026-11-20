@@ -90,5 +90,33 @@
       ]
     },
     "expect": { "is_decision": true, "options": { "min_length": 3 } }
+  },
+  {
+    "id": "decision_enthusiastic_pitch",
+    "fn": "moderator.detectDecision",
+    "note": "A member pitches a brand-new idea with 'let's'. Nothing was discussed before, so it is not a decision.",
+    "input": {
+      "goal": "Pick one topic for our social computing team project",
+      "trigger": "new_message",
+      "group": [
+        { "author": "Minsu", "text": "Hi all, ready to brainstorm?" },
+        { "author": "Seoyeon", "text": "Let's build a study app! I just thought of it, what do you think?" }
+      ]
+    },
+    "expect": { "is_decision": false }
+  },
+  {
+    "id": "decision_korean_reaction",
+    "fn": "moderator.detectDecision",
+    "note": "Korean reaction to an idea. Not a decision.",
+    "input": {
+      "goal": "소셜컴퓨팅 팀플 주제 정하기",
+      "trigger": "new_message",
+      "group": [
+        { "author": "지우", "text": "학식이랑 도서관이 얼마나 붐비는지 예측하는 건 어때?" },
+        { "author": "태호", "text": "오 괜찮은데? 재밌겠다." }
+      ]
+    },
+    "expect": { "is_decision": false }
   }
 ]

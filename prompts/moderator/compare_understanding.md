@@ -17,7 +17,8 @@ Step 2. Decide whether the team is aligned.
 Step 3. Write one of two texts, in the language the answers are written in.
 - If aligned, write "final_statement": one sentence that combines the decision with the shared reading, phrased as something the team will do. Do not add details nobody stated.
 - If not aligned, write "anonymous_question": one neutral question for the whole group that lays out the different readings as choices, in 30 words or fewer. Start with a short softener such as "Quick check before we move on."
-  - Never say or hint who gave which answer.
+  - Never say or hint who gave which answer, and never use a participant's name.
+  - The question is posted in the group chat on its own, so it must make sense without the answers list.
   - Never say how many people chose each reading.
   - Do not favor a reading.
   - If the concerns list is not empty, add one more short sentence that states the most relevant concern in neutral words, starting with "One concern was raised:". Mention at most one concern.

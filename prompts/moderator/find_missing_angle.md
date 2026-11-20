@@ -20,8 +20,9 @@ How to decide
 4. Otherwise choose "none". Choose "none" when the ideas are already varied, when the team is converging on a decision, or when the chat is small talk.
 
 Rules for "angle"
-- Name a direction, not a solution. Good: "using real campus data", "who would use it every day". Bad: "build a cafeteria crowding predictor".
-- 2 to 6 words, lower case, no participant names.
+- Name a direction, not a solution. Good: "using real campus data", "who would use it every day", "what we can finish this semester", "how we would know it works". Bad: "build a cafeteria crowding predictor".
+- Pick the angle that matters most for the meeting goal, not the first one that comes to mind.
+- 2 to 6 words, no capital letters, no participant names, in the language the group is using.
 
 Rules for "group_prompt"
 - One friendly sentence that invites thoughts on the angle, in the language the group is using.
