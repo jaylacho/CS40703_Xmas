@@ -12,6 +12,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { llmInfo, settings, usageSummary } from "../agents/llm";
+import { enableFixtureModels } from "./mocks";
 import * as moderator from "../agents/moderator";
 import * as personal from "../agents/personal";
 
@@ -46,9 +47,8 @@ const option = (name: string) => {
 const valueFlags = new Set(["only", "repeat", "model"]);
 const positional = argv.filter((a, i) => !a.startsWith("--") && !valueFlags.has((argv[i - 1] ?? "").replace(/^--/, "")));
 
-process.env.LLM_STRICT = "1"; // a failed call must fail the test, not fall back to the mock
 if (flag("dry-run")) process.env.LLM_DRY_RUN = "1";
-if (flag("mock")) process.env.LLM_MOCK = "1";
+if (flag("mock") || flag("dry-run") || !settings().apiKey) enableFixtureModels();
 if (option("model")) process.env.LLM_MODEL = option("model");
 const repeat = Math.max(1, Number(option("repeat") || 1));
 const only = option("only");

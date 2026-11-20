@@ -1,13 +1,43 @@
-// Fake agents for mock mode (LLM_MOCK=1 or no API key).
+// Deterministic model fixtures, registered exclusively by test entry points.
 // They are keyword rules tuned to the demo scenario in tests/scenarios/project_topic.json.
 // Use them to build the UI and to check the flow for free. They say nothing about prompt quality.
 
-import { isUnsure, norm } from "./format";
-import type { CompareInput, DetectDecisionInput, MissingAngleInput } from "./moderator";
-import type { AngleReplyInput, ChatInput, CheckSuggestInput, ReactInput } from "./personal";
-import type { AngleReply, ChatResult, CheckSuggestion, Comparison, DecisionDetection, MissingAngle, PrivateTurn, ReactResult } from "./protocol";
+import { isUnsure, norm } from "../agents/format";
+import type { CompareInput, DetectDecisionInput, MissingAngleInput } from "../agents/moderator";
+import type { AngleReplyInput, ChatInput, CheckSuggestInput, ReactInput } from "../agents/personal";
+import type { AngleReply, ChatResult, CheckSuggestion, Comparison, DecisionDetection, MissingAngle, PrivateTurn, ReactResult } from "../agents/protocol";
+import { useFixtureGenerator } from "../agents/llm";
 
 const userTexts = (turns: PrivateTurn[]) => turns.filter((t) => t.role === "user").map((t) => t.text);
+
+// These fixtures exercise the same response validation as live calls.
+export function enableFixtureModels() {
+  useFixtureGenerator((prompt, context) => {
+    switch (prompt) {
+      case "moderator/find_missing_angle": return findMissingAngle(context as MissingAngleInput);
+      case "moderator/detect_decision": return detectDecision(context as DetectDecisionInput);
+      case "moderator/compare_understanding": return compareUnderstanding(context as CompareInput);
+      case "personal/chat": return chat(context as ChatInput);
+      case "personal/angle_reply":
+      case "personal/react": {
+        const input = context as AngleReplyInput & ReactInput;
+        const value = prompt === "personal/react" ? react(input) : angleReply(input);
+        const offered = "has_view" in value ? value.has_view : value.suggest;
+        const note = input.privateHistory.filter(turn => turn.role === "user").at(-1);
+        return offered && note
+          ? { kind: "grounded", draft: value.draft, nudge: value.nudge, evidence: [{ id: note.id, quote: note.text }] }
+          : { kind: "none", draft: "", nudge: "", evidence: [] };
+      }
+      case "personal/suggest_check_answer": {
+        const input = context as CheckSuggestInput;
+        const out = suggestCheckAnswer(input);
+        const note = input.privateHistory.filter(turn => turn.role === "user").at(-1);
+        return { ...out, why: out.why || input.question, evidence: out.suggested_option && note ? [{ id: note.id, quote: note.text }] : [] };
+      }
+      default: throw new Error("Unregistered test prompt: " + prompt);
+    }
+  });
+}
 
 // ---------- moderator ----------
 

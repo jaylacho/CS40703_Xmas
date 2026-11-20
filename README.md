@@ -9,23 +9,23 @@ CrossCheck helps a small team in a text-chat meeting. Each member has a private 
 
 ## Quick start
 
-You need Node 20 or newer.
+Use Node 20 or newer. Create the ignored server `.env` from `.env.example` and set `OPENROUTER_API_KEY`, or export the key in the API process environment. Personal Agent calls `openai/gpt-5-mini` through OpenRouter.
 
 ```bash
-npm install
-npm run simulate                 # plays a whole meeting in the terminal (mock agents, free)
-npm run test:prompts -- --mock   # checks that the test setup works (free)
+npm ci
+npm run dev:api                 # API on http://localhost:8787
 ```
 
-To test with the real model:
+In the [team website repository](https://github.com/ahdahioui/crosscheck), serve the `web/` directory with `python3 -m http.server 5173 --directory web`. Open http://localhost:5173. Each tab has its own participant session. The server keeps rooms in memory for its process lifetime.
 
 ```bash
-cp .env.example .env             # then paste the team key into OPENROUTER_API_KEY
-npm run test:moderator           # or: npm run test:personal
-npm run simulate
+npm run typecheck
+npm test                        # model validation + actual HTTP routes with injected replies
+npm run test:prompts -- --mock  # offline prompt fixtures
+npm run test:live               # opt-in real OpenRouter meeting using a synthetic scenario
 ```
 
-Without a key, everything runs in mock mode. Mock agents are simple keyword rules. They let you check the flow and build the UI, but they say nothing about prompt quality.
+The live test checks a relevant private suggestion for only one of two recipients, an unrelated private follow-up with its card open, an edited anonymous post, and approval invalidation on revision. Model errors surface to the private client. Scripted model outputs and sample participants belong to the test runners.
 
 ## Who owns what
 
@@ -42,7 +42,7 @@ Without a key, everything runs in mock mode. Mock agents are simple keyword rule
 | `agents/meeting.ts` | Runs one meeting: who is called when, what crosses the privacy boundary | Shared |
 | `agents/rules.ts` | Timing numbers (silence = 60 s, and so on) | Shared |
 | `agents/llm.ts` | OpenRouter call, prompt loading, cost counter | Shared |
-| `agents/mocks.ts` | Fake agents for mock mode | Shared |
+| `tests/mocks.ts` | Offline model fixtures | Shared |
 | `server/index.ts` | HTTP API used by the web UI | Shared |
 | `tests/run.ts`, `tests/simulate.ts` | Prompt tests and the full-meeting simulation | Shared |
 
@@ -64,7 +64,7 @@ The moderator acts at three moments:
 
 1. The group chat is silent for 60 s during ideation. It picks a missing angle and asks the personal agents. An agent whose user has a related private note suggests a draft to that user.
 2. A message looks like a decision. It opens a private agreement check for every member.
-3. All answers are in. It compares them. If they match, it posts "Agreed 4/4" and records the decision. If not, it posts one anonymous question.
+3. All answers are in. It compares them. Matching interpretations and explicit approval from every participant on this version record the decision. If not, it posts one anonymous question.
 
 ## Each prompt in one line
 
@@ -80,7 +80,7 @@ The moderator acts at three moments:
 
 ## How to work on a prompt
 
-A prompt file has two parts. Text above `=== INPUT ===` is the system prompt. Text below is the input template. `{{name}}` is replaced with meeting data. `<!-- comments -->` are not sent to the model.
+Personal prompts take a structured JSON context with the public timeline, the owner’s private history and the event. Moderator prompt files have two parts. Text above `=== INPUT ===` is the system prompt. Text below is the input template. `{{name}}` is replaced with meeting data. `<!-- comments -->` are not sent to the model.
 
 The loop:
 
@@ -114,7 +114,7 @@ Checks you can use in `expect`: an exact value, or `one_of`, `includes_any`, `in
 | `npm run test:prompts -- --only angle` | Fixtures whose id or function contains "angle" |
 | `npm run test:prompts -- --repeat 3` | Each fixture 3 times, to check consistency |
 | `npm run test:prompts -- --dry-run` | Print the filled prompts. No API call. |
-| `npm run test:prompts -- --model <id>` | Try another OpenRouter model |
+| `npm run test:prompts -- --model <id>` | Try another Moderator model |
 | `npm run dev:api` | API server for the web UI on http://localhost:8787 |
 | `npm run typecheck` | TypeScript check. Run before you push. |
 
@@ -122,11 +122,7 @@ Test results are saved in `tests/results/` (not committed).
 
 ## Cost
 
-Model: `openai/gpt-5-mini` on OpenRouter, $0.25 per 1M input tokens and $2 per 1M output tokens. Thinking tokens are billed as output, so `.env` sets reasoning effort to `low` and a limit of 1,500 output tokens per call.
-
-Rough estimate: one call costs about $0.001. One full fixture run (26 calls) or one simulated meeting (30 calls) costs about $0.03. Every script prints the real token count and cost at the end, so check that number after your first run.
-
-To save money: use `--dry-run` and `--only` while you edit, and run everything only before you push.
+Personal Agent uses `openai/gpt-5-mini`. The prompt test runner reports provider token usage and an estimate based on `LLM_PRICE_IN` and `LLM_PRICE_OUT`. Use `--mock` or `--dry-run` for offline fixture checks.
 
 ## Team rules
 
@@ -138,6 +134,5 @@ To save money: use `--dry-run` and `--only` while you edit, and run everything o
 
 ## Status
 
-- Done: agent layer, 7 prompt drafts, mock mode, prompt tests, full-meeting simulation, HTTP API.
-- Checked in mock mode only. The prompts have not been run against the real model yet.
-- Not done: web UI (`web/`), deployment, saving rooms to a database (rooms are lost when the server restarts).
+- The paired web client uses the room API and tab-scoped participant sessions. Personal Agent has offline and opt-in live acceptance tests.
+- Room data is in process memory. Restarting the API ends existing rooms and sessions.

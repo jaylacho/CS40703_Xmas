@@ -11,10 +11,12 @@ import fs from "node:fs";
 import path from "node:path";
 import { findPrivacyLeaks, Meeting } from "../agents/meeting";
 import { llmInfo, usageSummary } from "../agents/llm";
+import { enableFixtureModels } from "./mocks";
 import type { PrivateItem, ShareSuggestionCard, UnderstandingCheckCard, ConcernCard } from "../agents/protocol";
 
 type Step =
   | { do: "private" | "group"; user: string; text: string; after?: number; title?: string }
+  | { do: "revise"; user: string; text: string; after?: number; title?: string }
   | { do: "wait"; seconds: number; title?: string }
   | { do: "share"; user: string; fallback: string; after?: number; title?: string }
   | { do: "answer"; user: string; prefer: string; after?: number; title?: string }
@@ -23,14 +25,14 @@ type Step =
 type Scenario = { name: string; goal: string; host: string; participants: string[]; steps: Step[] };
 
 const argv = process.argv.slice(2);
-if (argv.includes("--mock")) process.env.LLM_MOCK = "1";
+if (argv.includes("--mock") || !process.env.OPENROUTER_API_KEY) enableFixtureModels();
 const quiet = argv.includes("--quiet");
 const file = argv.find((a) => a.endsWith(".json")) ?? "tests/scenarios/project_topic.json";
 const scenario = JSON.parse(fs.readFileSync(path.resolve(file), "utf8")) as Scenario;
 
 // A fake clock, so "wait 65 seconds" takes no real time.
 let clock = 0;
-const meeting = new Meeting({ goal: scenario.goal, host: scenario.host, now: () => clock });
+const meeting = new Meeting({ goal: scenario.goal, host: scenario.host, now: () => clock, tracePrompts: true });
 for (const p of scenario.participants) meeting.join(p);
 
 // ---------- printing ----------
@@ -81,6 +83,12 @@ async function run(step: Step): Promise<string> {
     case "group":
       await meeting.postGroupMessage(step.user, step.text);
       return `${step.user} posts in the group chat`;
+    case "revise": {
+      const version = meeting.view(step.user).agreement;
+      if (!version) throw new Error("No active proposal to revise");
+      await meeting.reviseCheck(step.user, version.checkId, step.text);
+      return `${step.user} opens the revised proposal for fresh approval`;
+    }
     case "wait":
       clock += step.seconds * 1000;
       await meeting.tick();
@@ -88,7 +96,7 @@ async function run(step: Step): Promise<string> {
     case "share": {
       const card = cardsOf(step.user).filter((c): c is ShareSuggestionCard => c.kind === "share_suggestion" && c.status === "open").pop();
       if (card) {
-        await meeting.shareCard(step.user, card.id);
+        await meeting.shareCard(step.user, card.id, card.draft, "named");
         return `${step.user} presses [Share to chat] on the agent's draft`;
       }
       await meeting.postGroupMessage(step.user, step.fallback);
@@ -99,13 +107,13 @@ async function run(step: Step): Promise<string> {
       if (!card) return `${step.user} has no open agreement check (skipped)`;
       const label = card.options.find((o) => o.toLowerCase().includes(step.prefer.toLowerCase())) ?? card.options[0];
       const hint = card.suggested ? `   (agent suggested "${card.suggested}": ${card.why})` : "";
-      await meeting.answerCheck(step.user, card.checkId, label);
+      await meeting.answerCheck(step.user, card.checkId, label, true);
       return `${step.user} answers privately: "${label}"${hint}`;
     }
     case "concern": {
       const card = cardsOf(step.user).filter((c): c is ConcernCard => c.kind === "concern" && c.status === "open").pop();
       if (!card) return `${step.user} has no concern card (skipped)`;
-      await meeting.raiseConcern(step.user, card.id, step.mode);
+      await meeting.raiseConcern(step.user, card.id, step.mode, card.draft);
       return `${step.user} raises the concern ${step.mode === "anonymous" ? "anonymously" : "with their name"}`;
     }
   }
