@@ -5,6 +5,8 @@
   "type": "module",
   "description": "CrossCheck: a moderator agent and per-person private agents that help a team brainstorm and reach agreement in a text-chat meeting.",
   "scripts": {
+    "test": "tsx --test tests/*.test.ts",
+    "test:live": "CROSSCHECK_LIVE_TEST=1 tsx --test tests/room-flow.test.ts",
     "typecheck": "tsc --noEmit",
     "test:prompts": "tsx tests/run.ts",
     "test:moderator": "tsx tests/run.ts moderator",

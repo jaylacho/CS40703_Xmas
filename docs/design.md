@@ -42,11 +42,11 @@ A label is a short, neutral phrase, for example "campus crowding" or "Library an
 | Teammate posts in the group chat (ideation) | Agents of the other members who have private notes | If the post connects to the user's notes, suggest a reply draft. At most one unprompted suggestion per 30 s per user. |
 | Any new group message | Moderator | Is this a decision? If yes, open an agreement check. |
 | Group chat silent for 60 s (ideation, at least 2 messages, at most 2 times per meeting) | Moderator, then the personal agents | Moderator names a missing angle. Each agent checks its own user's notes and may suggest a draft. If nobody has a view, the moderator asks the group directly. |
-| Agreement check opens | Each personal agent | Pre-selects the option its user most likely means, from the user's own words. The user can change it. |
-| All members answered (or 3 minutes passed with 2+ answers) | Moderator | Compares the shuffled, nameless answers. Same meaning: "Agreed 4/4" and the decision is recorded. Different: "Agreement 2/4" and one anonymous question. |
-| User raises a concern anonymously | Moderator | Passes the concern label to the group without a name. |
+| Agreement check opens | Each personal agent | Privately checks the current version against the member’s words. A suggested interpretation is advisory. The member chooses an answer and separately decides whether to approve. |
+| All members answered (or 3 minutes passed with 2+ answers) | Moderator | Compares the shuffled, nameless answers. Matching interpretations and unanimous explicit approval on the same version record the decision. Different: "Agreement 2/4" and one anonymous question. |
+| User raises a concern anonymously | Moderator | The server publishes the exact edited text with anonymous attribution. |
 
-After a mismatch, the team talks in the group chat. The next decision message opens a new check. This repeats until everyone agrees.
+After a mismatch, members can keep talking privately or publicly. The host can edit the proposal, which opens a new version and clears approvals. This repeats until everyone agrees.
 
 All numbers are in `agents/rules.ts`.
 

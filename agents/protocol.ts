@@ -6,7 +6,7 @@ export type Stage = "ideation" | "agreement" | "done";
 // ---------- group chat ----------
 
 /** One line of the group chat, as the agents read it. */
-export type ChatLine = { author: string; text: string; kind?: "user" | "moderator" };
+export type ChatLine = { id?: string; author: string; text: string; kind?: "user" | "moderator" };
 
 /** Extra structured info on a moderator message, so the UI can render it without parsing text. */
 export type ModeratorNote =
@@ -22,11 +22,12 @@ export type GroupMessage = {
   text: string;
   at: number;
   note?: ModeratorNote;
+  anonymous?: boolean;
 };
 
 // ---------- private window (one per participant) ----------
 
-export type PrivateTurn = { role: "user" | "agent"; text: string };
+export type PrivateTurn = { id?: string; role: "user" | "agent"; text: string };
 
 /** The agent offers a message the user could post in the group chat. Nothing is posted until the user shares it. */
 export type ShareSuggestionCard = {
@@ -35,6 +36,8 @@ export type ShareSuggestionCard = {
   source: "chat" | "missing_angle" | "react";
   nudge: string;
   draft: string;
+  evidenceIds?: string[];
+  checkId?: string;
   status: "open" | "shared" | "dismissed" | "superseded";
 };
 
@@ -48,6 +51,9 @@ export type UnderstandingCheckCard = {
   options: string[];
   suggested?: string; // the personal agent's guess, from this user's own words
   why?: string;
+  version: number;
+  evidenceIds?: string[];
+  approved?: boolean;
   status: "open" | "answered" | "closed";
   answer?: string;
 };
@@ -56,9 +62,10 @@ export type UnderstandingCheckCard = {
 export type ConcernCard = {
   kind: "concern";
   id: string;
-  label: string; // short and neutral. This is all the moderator sees if raised anonymously.
-  draft: string; // what gets posted if the user raises it under their own name
-  status: "open" | "raised_named" | "raised_anonymous" | "dismissed";
+  label: string;
+  draft: string;
+  checkId?: string;
+  status: "open" | "raised_named" | "raised_anonymous" | "dismissed" | "superseded";
 };
 
 export type Card = ShareSuggestionCard | UnderstandingCheckCard | ConcernCard;
@@ -71,7 +78,7 @@ export type PrivateItem =
 // These are the ONLY things that cross the privacy boundary. Labels only, never private text.
 
 export type ModeratorToAgent =
-  | { type: "angle_query"; angle: string }
+  | { type: "angle_query"; angle: string; intent?: "find_contribution" | "invite_brainstorm" }
   | { type: "check_request"; checkId: string; decision: string; question: string; options: string[] };
 
 export type AgentToModerator =
@@ -106,16 +113,18 @@ export type ChatResult = {
   concern: { label: string; draft: string } | null;
 };
 
-export type AngleReply = { has_view: boolean; label: string; nudge: string; draft: string };
+export type AngleReply = { has_view: boolean; label: string; nudge: string; draft: string; evidenceIds?: string[] };
 
-export type ReactResult = { suggest: boolean; nudge: string; draft: string };
+export type ReactResult = { suggest: boolean; nudge: string; draft: string; evidenceIds?: string[] };
 
-export type CheckSuggestion = { suggested_option: string | null; why: string };
+export type CheckSuggestion = { suggested_option: string | null; why: string; evidenceIds?: string[] };
 
 // ---------- meeting state ----------
 
 export type Check = {
   id: string;
+  version: number;
+  approvals: Record<string, boolean>;
   decision: string;
   question: string;
   options: string[];
@@ -129,7 +138,7 @@ export type Check = {
   statement?: string;
 };
 
-export type DecisionRecord = { id: string; checkId: string; statement: string; at: number };
+export type DecisionRecord = { id: string; checkId: string; version: number; supersededBy?: number; statement: string; at: number };
 
 /** Everything one participant is allowed to see. This is what GET /rooms/:id/view returns. */
 export type UserView = {
@@ -144,6 +153,8 @@ export type UserView = {
   agentTyping: boolean;
   agreement: null | {
     checkId: string;
+    version: number;
+    approvedCount: number;
     status: Check["status"];
     decision: string;
     question: string;
@@ -154,7 +165,7 @@ export type UserView = {
     statement?: string;
   };
   decisions: DecisionRecord[];
-  llm: { mode: "mock" | "live"; model: string };
+  llm: { mode: "mock" | "live" | "unconfigured"; model: string };
 };
 
 // ---------- trace (for debugging, the privacy check, and the report) ----------

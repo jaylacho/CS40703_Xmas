@@ -30,8 +30,8 @@
       "stage": "ideation",
       "group": [],
       "privateHistory": [
-        { "role": "user", "text": "I'm interested in campus life problems. Help me think." },
-        { "role": "agent", "text": "A few directions: crowding in the cafeteria and library, lost and found, booking study rooms." }
+        { "id": "p_fixture_1", "role": "user", "text": "I'm interested in campus life problems. Help me think." },
+        { "id": "p_fixture_2", "role": "agent", "text": "A few directions: crowding in the cafeteria and library, lost and found, booking study rooms." }
       ],
       "message": "Crowding sounds good, but I'm not sure we can get the data. Just keep it in mind for now, don't share it."
     },
@@ -67,8 +67,8 @@
         { "author": "Minsu", "text": "Nice. Let's go with crowding prediction then, for the whole campus." }
       ],
       "privateHistory": [
-        { "role": "user", "text": "Something about this bothers me, but I can't tell what." },
-        { "role": "agent", "text": "Is it the scope, the data, or the timeline that worries you?" }
+        { "id": "p_fixture_3", "role": "user", "text": "Something about this bothers me, but I can't tell what." },
+        { "id": "p_fixture_4", "role": "agent", "text": "Is it the scope, the data, or the timeline that worries you?" }
       ],
       "message": "The scope. The whole campus is too big for one semester. But everyone seems to like it, so it's hard to say."
     },
@@ -87,8 +87,8 @@
         { "author": "Seoyeon", "text": "A chatbot for club recruiting could work too." }
       ],
       "privateHistory": [
-        { "role": "user", "text": "Predicting crowding in the cafeteria and library sounds good, but can we get the data? I'm not sure it's a good idea yet." },
-        { "role": "agent", "text": "Noted. It stays between us." }
+        { "id": "p_fixture_5", "role": "user", "text": "Predicting crowding in the cafeteria and library sounds good, but can we get the data? I'm not sure it's a good idea yet." },
+        { "id": "p_fixture_6", "role": "agent", "text": "Noted. It stays between us." }
       ]
     },
     "expect": {
@@ -107,8 +107,8 @@
       "angle": "using real campus data",
       "group": [{ "author": "Minsu", "text": "How about a study group matching app?" }],
       "privateHistory": [
-        { "role": "user", "text": "Can you make my study group idea sound more exciting?" },
-        { "role": "agent", "text": "Sure. Try: a matching app that pairs students by course and schedule." }
+        { "id": "p_fixture_7", "role": "user", "text": "Can you make my study group idea sound more exciting?" },
+        { "id": "p_fixture_8", "role": "agent", "text": "Sure. Try: a matching app that pairs students by course and schedule." }
       ]
     },
     "expect": { "has_view": false, "draft": { "is_empty": true } }
@@ -126,8 +126,8 @@
         { "author": "Jiwoo", "text": "What about predicting how crowded the cafeteria and library are, so people can avoid peak times?" }
       ],
       "privateHistory": [
-        { "role": "user", "text": "Is there any public campus data we could use? I heard the Wi-Fi access counts for every building are public on the campus portal. Remember that." },
-        { "role": "agent", "text": "Noted." }
+        { "id": "p_fixture_9", "role": "user", "text": "Is there any public campus data we could use? I heard the Wi-Fi access counts for every building are public on the campus portal. Remember that." },
+        { "id": "p_fixture_10", "role": "agent", "text": "Noted." }
       ]
     },
     "expect": { "suggest": true, "draft": { "includes_any": ["wi-fi", "wifi"] } }
@@ -142,8 +142,8 @@
       "newMessage": { "author": "Seoyeon", "text": "A chatbot for club recruiting could work too." },
       "group": [{ "author": "Seoyeon", "text": "A chatbot for club recruiting could work too." }],
       "privateHistory": [
-        { "role": "user", "text": "Is there any public campus data we could use? I heard the Wi-Fi access counts for every building are public on the campus portal. Remember that." },
-        { "role": "agent", "text": "Noted." }
+        { "id": "p_fixture_11", "role": "user", "text": "Is there any public campus data we could use? I heard the Wi-Fi access counts for every building are public on the campus portal. Remember that." },
+        { "id": "p_fixture_12", "role": "agent", "text": "Noted." }
       ]
     },
     "expect": { "suggest": false }
@@ -164,7 +164,7 @@
         { "author": "Minsu", "text": "Nice. Let's go with crowding prediction then, using campus data." }
       ],
       "privateHistory": [
-        { "role": "user", "text": "I heard the Wi-Fi access counts for every building are public. If we do crowding I want to cover all buildings, that would be impressive." }
+        { "id": "p_fixture_13", "role": "user", "text": "I heard the Wi-Fi access counts for every building are public. If we do crowding I want to cover all buildings, that would be impressive." }
       ]
     },
     "expect": { "suggested_option": "The whole campus", "why": { "not_empty": true } }
@@ -183,7 +183,7 @@
         { "author": "Jiwoo", "text": "What about predicting how crowded a place on campus is?" },
         { "author": "Minsu", "text": "Nice. Let's go with crowding prediction then." }
       ],
-      "privateHistory": [{ "role": "user", "text": "Can you make my study group idea sound more exciting?" }]
+      "privateHistory": [{ "id": "p_fixture_14", "role": "user", "text": "Can you make my study group idea sound more exciting?" }]
     },
     "expect": { "suggested_option": { "is_null": true } }
   }

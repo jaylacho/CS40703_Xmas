@@ -41,7 +41,11 @@ export type MeetingOptions = {
   rules?: Partial<Rules>;
   /** Injectable clock, so tests can fast-forward the silence timer. */
   now?: () => number;
+  /** Opt in only for local diagnostic fixtures that explicitly inspect prompt isolation. */
+  tracePrompts?: boolean;
 };
+
+export class PersonalAgentUnavailable extends Error {}
 
 export class Meeting {
   readonly id: string;
@@ -58,14 +62,18 @@ export class Meeting {
 
   private windows = new Map<string, PrivateItem[]>();
   private typing = new Map<string, number>();
+  private chatJobs = new Map<string, Promise<void>>();
   private lastProactiveAt = new Map<string, number>();
   private anglesAsked: string[] = [];
   private userMsgsAtLastAngleRun = 0;
   private angleBusy = false;
-  private detectBusy = false;
-  private comparing = false;
+  private detection?: Promise<void>;
+  private pendingDetection?: "new_message" | "host_request";
+  private comparison?: { check: Check; inputs: string };
+  private lastCompared = "";
   private seq = 0;
   private now: () => number;
+  private tracePrompts: boolean;
 
   constructor(opts: MeetingOptions) {
     this.id = opts.id ?? randomUUID().slice(0, 8);
@@ -73,6 +81,7 @@ export class Meeting {
     this.host = opts.host.trim();
     this.rules = { ...DEFAULT_RULES, ...opts.rules };
     this.now = opts.now ?? Date.now;
+    this.tracePrompts = opts.tracePrompts === true;
     this.join(this.host);
   }
 
@@ -84,56 +93,82 @@ export class Meeting {
   join(name: string): void {
     const user = name.trim();
     if (!user) throw new Error("Name is required");
-    if (user.toLowerCase() === "moderator") throw new Error('"Moderator" is reserved');
+    if (["moderator", "anonymous"].includes(user.toLowerCase())) throw new Error("That display name is reserved");
     if (this.participants.includes(user)) return;
     this.participants.push(user);
     this.windows.set(user, []);
+    if (this.check?.status === "collecting") {
+      this.check.askedOf.push(user);
+      this.addCheckCard(user, this.check);
+      void this.reviewCheck(user, this.check).catch(() => console.error("[CrossCheck] private proposal review failed"));
+    }
   }
 
   /** A participant posts in the group chat. */
   async postGroupMessage(user: string, text: string): Promise<void> {
     this.requireUser(user);
-    const body = text.trim();
-    if (!body) throw new Error("Empty message");
-    const msg = this.addGroup(user, "user", body);
-    this.log("user_to_group", `user:${user}`, "group", { text: body });
+    if (!text.trim()) throw new Error("Empty message");
+    await this.publish(user, text, false);
+  }
 
-    const jobs: Promise<void>[] = [];
-    if (this.stage === "ideation") jobs.push(this.runReactions(msg));
+  private async publish(user: string, body: string, anonymous: boolean): Promise<void> {
+    const msg = this.addGroup(anonymous ? "Anonymous" : user, "user", body);
+    if (anonymous) msg.anonymous = true;
+    this.log("user_to_group", anonymous ? "anonymous" : `user:${user}`, "group", {});
+
+    const jobs = [this.runReactions(msg, user)];
     if (!this.checkOpen()) jobs.push(this.runDetect("new_message"));
     await Promise.all(jobs);
   }
 
   /** A participant talks to their own agent (Task 1). Only that agent is called. */
-  async sendPrivateMessage(user: string, text: string): Promise<void> {
+  async sendPrivateMessage(user: string, text: string, options: {
+    cardId?: string; groupMessageId?: string; intent?: "invite_brainstorm";
+  } = {}): Promise<void> {
     this.requireUser(user);
     const body = text.trim();
     if (!body) throw new Error("Empty message");
-    const history = this.privateTurns(user);
-    this.addPrivate(user, { type: "user", text: body });
-    this.log("user_to_agent", `user:${user}`, `agent:${user}`, {});
+    if (options.cardId && options.groupMessageId) throw new Error("Choose one reference");
+    const card = options.cardId ? this.findCard(user, options.cardId) : undefined;
+    const groupMessage = options.groupMessageId ? this.group.find(m => m.id === options.groupMessageId) : undefined;
+    if (options.groupMessageId && !groupMessage) throw new Error("Referenced group message not found");
+    if (options.intent && groupMessage?.note?.type !== "angle_prompt") throw new Error("Choose a public moderator angle");
+    const reference = card ?? groupMessage;
+    // Serialize only direct turns from the same member. Passive model calls use independent promises.
+    const previous = this.chatJobs.get(user);
     this.typing.set(user, (this.typing.get(user) ?? 0) + 1);
-    try {
-      const res = await personal.chat(
-        { user, goal: this.goal, stage: this.stage, group: this.groupContext(), privateHistory: history, message: body },
-        this.llmLog(`agent:${user}`),
-      );
+    const job = (previous ?? Promise.resolve()).catch(() => {}).then(async () => {
+      if (card?.checkId && card.checkId !== this.check?.id) throw new Error("The proposal changed; select the current check");
+      const check = this.check;
+      const proposal = check ? { id: check.id, version: check.version, decision: check.decision } : undefined;
+      const res = await personal.chat({
+        ...this.ownerContext(user), stage: this.stage, message: body, reference, proposal, intent: options.intent,
+      }, this.llmLog(`agent:${user}`)).catch(() => { throw new PersonalAgentUnavailable("Personal Agent could not complete the request. Check the server's OpenRouter configuration and retry."); });
+      if (check !== this.check && (card?.checkId || res.concern))
+        throw new Error("The proposal changed while you were chatting. Review the latest version and send again.");
+      this.addPrivate(user, { type: "user", text: body });
       this.addPrivate(user, { type: "agent", text: res.reply });
-      if (res.share_draft) this.addSuggestion(user, "chat", "Here is a draft you can post in the group chat.", res.share_draft);
-      if (res.concern) {
-        this.addCard(user, { kind: "concern", id: this.nextId("card"), label: res.concern.label, draft: res.concern.draft, status: "open" });
-      }
+      this.log("user_to_agent", `user:${user}`, `agent:${user}`, {});
+      if (res.share_draft) this.addSuggestion(user, "chat", res.reply, res.share_draft, [], card?.checkId);
+      if (res.concern) this.addCard(user, { kind: "concern", id: this.nextId("card"), label: res.concern.label,
+        draft: res.concern.draft, status: "open", checkId: check?.id });
+    });
+    this.chatJobs.set(user, job);
+    try {
+      await job;
     } finally {
+      if (this.chatJobs.get(user) === job) this.chatJobs.delete(user);
       this.typing.set(user, Math.max(0, (this.typing.get(user) ?? 1) - 1));
     }
   }
 
   /** The user presses [Share to chat] on a suggestion. This is the only way private content reaches the group. */
-  async shareCard(user: string, cardId: string, editedText?: string): Promise<void> {
+  async shareCard(user: string, cardId: string, finalText: string, mode: "named" | "anonymous" = "named"): Promise<void> {
     const card = this.findCard(user, cardId);
     if (card.kind !== "share_suggestion" || card.status !== "open") throw new Error("This suggestion is not open");
+    this.validateShare(card, finalText);
     card.status = "shared";
-    await this.postGroupMessage(user, editedText?.trim() || card.draft);
+    await this.publish(user, finalText, mode === "anonymous");
   }
 
   dismissCard(user: string, cardId: string): void {
@@ -143,35 +178,36 @@ export class Meeting {
   }
 
   /** The user raises a concern their agent helped them pin down (Task 3). */
-  async raiseConcern(user: string, cardId: string, mode: "named" | "anonymous"): Promise<void> {
+  async raiseConcern(user: string, cardId: string, mode: "named" | "anonymous", finalText: string): Promise<void> {
     const card = this.findCard(user, cardId);
     if (card.kind !== "concern" || card.status !== "open") throw new Error("This concern is not open");
-    if (mode === "named") {
-      card.status = "raised_named";
-      await this.postGroupMessage(user, card.draft);
-      return;
-    }
-    card.status = "raised_anonymous";
-    this.toModerator(user, { type: "concern", label: card.label });
-    if (this.check?.status === "collecting") {
-      this.check.concerns.push(card.label); // shown together with the anonymous question
-    } else {
-      this.moderatorSays(`A concern was raised anonymously: ${card.label}`, { type: "concern" });
-    }
+    this.validateShare(card, finalText);
+    card.status = mode === "named" ? "raised_named" : "raised_anonymous";
+    if (this.checkOpen()) this.check!.concerns.push(finalText);
+    await this.publish(user, finalText, mode === "anonymous");
+  }
+
+  private validateShare(card: ShareSuggestionCard | ConcernCard, finalText: string): void {
+    if (!finalText?.trim()) throw new Error("Confirm the final text to share");
+    if (card.checkId && card.checkId !== this.check?.id) throw new Error("The proposal changed; review the current check");
   }
 
   /** The user answers the agreement check in their private window. */
-  async answerCheck(user: string, checkId: string, label: string): Promise<void> {
+  async answerCheck(user: string, checkId: string, label: string, approve: boolean): Promise<void> {
     this.requireUser(user);
     const check = this.check;
     if (!check || check.id !== checkId || check.status !== "collecting") throw new Error("This check is closed");
     const answer = label.trim();
     if (!answer) throw new Error("Answer is required");
+    if (typeof approve !== "boolean") throw new Error("Choose whether to approve this proposal");
+    if (!check.askedOf.includes(user)) throw new Error("This participant was not asked");
     check.answers[user] = answer;
+    check.approvals[user] = approve;
     const card = this.checkCard(user, checkId);
     if (card) {
       card.status = "answered";
       card.answer = answer;
+      card.approved = approve;
     }
     this.toModerator(user, { type: "check_reply", checkId, label: answer });
     if (check.askedOf.every((p) => check.answers[p])) await this.runCompare();
@@ -182,6 +218,22 @@ export class Meeting {
     this.requireHost(user);
     if (this.checkOpen()) throw new Error("A check is already open");
     await this.runDetect("host_request");
+  }
+
+  async reviseCheck(user: string, checkId: string, decision: string): Promise<void> {
+    this.requireHost(user);
+    if (!this.check || this.check.id !== checkId) throw new Error("The proposal changed; refresh before revising");
+    const revised = decision.trim();
+    if (!revised || revised === this.check.decision) throw new Error("Enter a revised proposal");
+    const previous = this.decisions.find(record => record.checkId === checkId);
+    if (previous) previous.supersededBy = this.check.version + 1;
+    await this.openCheck({ decision: revised, question: "How do you understand this revision?", options: [revised] });
+  }
+
+  async requestAngle(user: string, angle: string, intent: "find_contribution" | "invite_brainstorm"): Promise<void> {
+    this.requireHost(user);
+    if (!angle.trim()) throw new Error("An angle is required");
+    await this.askAboutAngle(angle.trim(), intent).catch(() => { throw new PersonalAgentUnavailable("Unable to complete the private angle checks. Please retry."); });
   }
 
   /** Host only: stop waiting and compare the answers so far. */
@@ -228,6 +280,8 @@ export class Meeting {
       agreement: c
         ? {
             checkId: c.id,
+            version: c.version,
+            approvedCount: Object.values(c.approvals).filter(Boolean).length,
             status: c.status,
             decision: c.decision,
             question: c.question,
@@ -252,18 +306,13 @@ export class Meeting {
   // Pipelines
   // =====================================================================
 
-  /** Ideation: a teammate posted. Each other member's agent checks its own user's notes for a connection. */
-  private async runReactions(msg: GroupMessage): Promise<void> {
-    const others = this.participants.filter((p) => p !== msg.author && this.hasPrivateNotes(p) && this.cooledDown(p));
-    await Promise.all(
-      others.map(async (p) => {
-        const res = await personal.react(
-          { user: p, goal: this.goal, group: this.groupContext(), privateHistory: this.privateTurns(p), newMessage: msg },
-          this.llmLog(`agent:${p}`),
-        );
-        if (res.suggest && this.stage === "ideation") this.addSuggestion(p, "react", res.nudge, res.draft);
-      }),
-    );
+  /** A teammate posted. Each other member’s agent checks that member’s own statements for a connection. */
+  private async runReactions(msg: GroupMessage, author: string): Promise<void> {
+    const others = this.participants.filter((p) => p !== author && this.hasOwnerMessages(p) && this.cooledDown(p));
+    await Promise.all(others.map(p => this.offerCurrent(p, "react", true, async context => {
+      const res = await personal.react({ ...context, newMessage: msg }, this.llmLog(`agent:${p}`));
+      return res.suggest ? res : null;
+    })));
   }
 
   /** Ideation: the chat went quiet. The moderator looks for a missing angle and asks the personal agents. */
@@ -277,23 +326,9 @@ export class Meeting {
       );
       if (res.action !== "ask_angle" || this.stage !== "ideation") return;
       this.anglesAsked.push(res.angle);
-      this.toAgents({ type: "angle_query", angle: res.angle });
-
-      const found = await Promise.all(
-        this.participants.map(async (p) => {
-          if (!this.hasPrivateNotes(p)) return false; // nothing private to look at: no call, no cost
-          const reply = await personal.angleReply(
-            { user: p, goal: this.goal, group: this.groupContext(), privateHistory: this.privateTurns(p), angle: res.angle },
-            this.llmLog(`agent:${p}`),
-          );
-          // Only the label crosses to the moderator. The draft stays in the user's private window.
-          this.toModerator(p, { type: "angle_reply", hasView: reply.has_view, label: reply.label });
-          if (reply.has_view) this.addSuggestion(p, "missing_angle", reply.nudge, reply.draft);
-          return reply.has_view;
-        }),
-      );
+      const found = await this.askAboutAngle(res.angle, "find_contribution");
       // Nobody has a private thought on it: the moderator offers the angle to the whole group instead.
-      if (!found.some(Boolean) && res.group_prompt) {
+      if (!found && res.group_prompt && this.stage === "ideation") {
         this.moderatorSays(res.group_prompt, { type: "angle_prompt", angle: res.angle });
       }
     } finally {
@@ -301,101 +336,158 @@ export class Meeting {
     }
   }
 
+  private async askAboutAngle(angle: string, intent: "find_contribution" | "invite_brainstorm"): Promise<boolean> {
+    this.toAgents({ type: "angle_query", angle, intent });
+    const found = await Promise.all(this.participants.map(async (p) => {
+      if (intent === "find_contribution" && !this.hasOwnerMessages(p)) return false;
+      const shown = await this.offerCurrent(p, "missing_angle", intent === "find_contribution", async context => {
+        const reply = await personal.angleReply({ ...context, angle, intent }, this.llmLog(`agent:${p}`));
+        return reply.has_view ? reply : null;
+      });
+      this.toModerator(p, { type: "angle_reply", hasView: shown, label: shown ? angle : "" });
+      return shown;
+    }));
+    return found.some(Boolean);
+  }
+
+  private async offerCurrent(user: string, source: "react" | "missing_angle", evidenceRequired: boolean,
+    decide: (context: ReturnType<Meeting["ownerContext"]>) => Promise<{
+      nudge: string; draft: string; evidenceIds: string[];
+    } | null>): Promise<boolean> {
+    const initial = this.ownerContext(user);
+    const eligible = new Set([
+      ...initial.privateHistory.filter(m => m.role === "user").map(m => m.id),
+      ...initial.group.filter(m => m.kind === "user" && m.author === user).map(m => m.id),
+    ]);
+    let context = initial;
+    // Recheck a positive result once if the room moved on during inference. Use the newer
+    // public discussion for novelty, but keep the owner's evidence anchored to the original event.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const result = await decide(context);
+      if (!result || (evidenceRequired && !result.evidenceIds.length) ||
+          result.evidenceIds.some(id => !eligible.has(id))) return false;
+      if (source === "react" && !this.cooledDown(user)) return false;
+      if (this.group.length === context.group.length) {
+        return this.addSuggestion(user, source, result.nudge, result.draft, result.evidenceIds);
+      }
+      context = { ...this.ownerContext(user), privateHistory: initial.privateHistory };
+    }
+    return false;
+  }
+
   /** Any stage: is the newest group message a decision? If yes, open an agreement check. */
   private async runDetect(trigger: "new_message" | "host_request"): Promise<void> {
-    if (this.detectBusy || this.checkOpen()) return;
-    this.detectBusy = true;
-    try {
-      const d = await moderator.detectDecision({ goal: this.goal, group: this.groupContext(), trigger }, this.llmLog("moderator"));
-      if (d.is_decision && !this.checkOpen()) await this.openCheck(d);
-    } finally {
-      this.detectBusy = false;
+    if (this.checkOpen()) return;
+    if (!this.pendingDetection || trigger === "host_request") this.pendingDetection = trigger;
+    if (!this.detection) {
+      this.detection = this.detectLatest().finally(() => { this.detection = undefined; });
+    }
+    await this.detection;
+  }
+
+  private async detectLatest(): Promise<void> {
+    while (this.pendingDetection && !this.checkOpen()) {
+      const trigger = this.pendingDetection;
+      this.pendingDetection = undefined;
+      const previous = this.check;
+      const group = this.groupContext();
+      const d = await moderator.detectDecision({ goal: this.goal, group, trigger }, this.llmLog("moderator"));
+      if (d.is_decision && this.check === previous && this.group.length === group.length) {
+        await this.openCheck(d);
+        this.pendingDetection = undefined;
+      }
     }
   }
 
-  private async openCheck(d: DecisionDetection): Promise<void> {
+  private async openCheck(d: Pick<DecisionDetection, "decision" | "question" | "options">): Promise<void> {
+    const previous = this.check;
+    // Old private cards remain readable, but cannot share or approve an obsolete proposal.
+    if (previous) for (const user of this.participants) {
+      for (const card of this.cards(user)) {
+        if (card.checkId !== previous.id) continue;
+        if (card.kind === "understanding_check") card.status = "closed";
+        else if (card.status === "open") card.status = "superseded";
+      }
+    }
     const check: Check = {
       id: this.nextId("check"),
+      version: (previous?.version ?? 0) + 1,
+      approvals: Object.create(null),
       decision: d.decision,
       question: d.question,
       options: d.options,
       status: "collecting",
       askedOf: [...this.participants],
-      answers: {},
+      answers: Object.create(null),
       concerns: [],
       createdAt: this.now(),
     };
     this.check = check;
+    this.lastCompared = "";
     this.stage = "agreement";
     this.toAgents({ type: "check_request", checkId: check.id, decision: d.decision, question: d.question, options: d.options });
 
-    for (const p of check.askedOf) {
-      this.addCard(p, {
-        kind: "understanding_check",
-        id: this.nextId("card"),
-        checkId: check.id,
-        decision: d.decision,
-        question: d.question,
-        options: d.options,
-        status: "open",
-      });
-    }
+    for (const p of check.askedOf) this.addCheckCard(p, check);
     // Each agent pre-selects the option its own user most likely means. It arrives a moment after the card.
-    await Promise.all(
-      check.askedOf.map(async (p) => {
-        if (!this.hasPrivateNotes(p)) return;
-        const s = await personal.suggestCheckAnswer(
-          { user: p, goal: this.goal, group: this.groupContext(), privateHistory: this.privateTurns(p), decision: d.decision, question: d.question, options: d.options },
-          this.llmLog(`agent:${p}`),
-        );
-        const card = this.checkCard(p, check.id);
-        if (card && card.status === "open" && s.suggested_option) {
-          card.suggested = s.suggested_option;
-          card.why = s.why;
-        }
-      }),
+    await Promise.all(check.askedOf.map(p => this.reviewCheck(p, check)));
+  }
+
+  private async reviewCheck(user: string, check: Check): Promise<void> {
+    const response = await personal.suggestCheckAnswer(
+      { ...this.ownerContext(user), decision: check.decision, question: check.question, options: check.options,
+        proposal: { id: check.id, version: check.version, decision: check.decision } }, this.llmLog(`agent:${user}`),
     );
+    const card = this.checkCard(user, check.id);
+    if (card && card.status === "open" && this.check === check) {
+      if (response.suggested_option) card.suggested = response.suggested_option;
+      card.why = response.why;
+      card.evidenceIds = response.evidenceIds;
+    }
+  }
+
+  private addCheckCard(user: string, check: Check): void {
+    this.addCard(user, { kind: "understanding_check", id: this.nextId("card"), checkId: check.id,
+      version: check.version, decision: check.decision, question: check.question, options: check.options, status: "open" });
   }
 
   /** The answers are in. The moderator sees shuffled labels without names. */
   private async runCompare(): Promise<void> {
     const check = this.check;
-    if (!check || check.status !== "collecting" || this.comparing) return;
-    this.comparing = true;
+    if (!check || check.status !== "collecting") return;
+    const signature = () => JSON.stringify([check.answers, check.approvals, check.askedOf, check.concerns]);
+    const inputs = signature();
+    if (inputs === this.lastCompared ||
+        (this.comparison?.check === check && this.comparison.inputs === inputs)) return;
+    const job = { check, inputs };
+    this.comparison = job;
     try {
       const labels = shuffle(Object.values(check.answers));
       const res = await moderator.compareUnderstanding(
-        { decision: check.decision, question: check.question, labels, concerns: check.concerns },
+        { decision: check.decision, question: check.question, labels, concerns: [...check.concerns] },
         this.llmLog("moderator"),
       );
-      const total = labels.length;
-      const agreed = Math.max(...res.groups.map((g) => g.length));
-      const missing = check.askedOf.length - total;
-      const missingNote = missing > 0 ? ` (${missing} did not answer)` : "";
-      check.agreed = agreed;
+      // Check revisions and follow-up answers can arrive while the comparison runs.
+      if (this.check !== check || this.comparison !== job || check.status !== "collecting" || signature() !== inputs) return;
+      this.lastCompared = inputs;
+      const total = check.askedOf.length;
+      const approved = Object.values(check.approvals).filter(Boolean).length;
+      check.agreed = approved;
       check.total = total;
-
-      if (res.aligned) {
+      if (approved === total && res.aligned) {
         check.status = "aligned";
-        check.statement = res.final_statement;
-        this.decisions.push({ id: this.nextId("decision"), checkId: check.id, statement: res.final_statement, at: this.now() });
+        // Record the exact proposal the users approved, never a model-generated paraphrase.
+        check.statement = check.decision;
+        this.decisions.push({ id: this.nextId("decision"), checkId: check.id, version: check.version, statement: check.decision, at: this.now() });
         this.stage = "done";
-        this.moderatorSays(`Agreed ${agreed}/${total}${missingNote}. ${res.final_statement}`, {
-          type: "agreed",
-          agreed,
-          total,
-          statement: res.final_statement,
+        this.moderatorSays(`Agreed ${approved}/${total}. ${check.decision}`, {
+          type: "agreed", agreed: approved, total, statement: check.decision,
         });
       } else {
-        check.status = "mismatch";
-        this.moderatorSays(`Agreement ${agreed}/${total}${missingNote}. ${res.anonymous_question}`, { type: "agreement_count", agreed, total });
-      }
-      for (const p of check.askedOf) {
-        const card = this.checkCard(p, check.id);
-        if (card && card.status === "open") card.status = "closed";
+        const message = [`Explicit approvals: ${approved}/${total}.`, res.anonymous_question].filter(Boolean).join(" ");
+        this.moderatorSays(message, { type: "agreement_count", agreed: approved, total });
       }
     } finally {
-      this.comparing = false;
+      if (this.comparison === job) this.comparison = undefined;
     }
   }
 
@@ -422,20 +514,27 @@ export class Meeting {
 
   /** The group chat as the agents read it. This is ALL the moderator ever gets, plus labels. */
   private groupContext(): ChatLine[] {
-    return this.group.slice(-this.rules.groupContextMessages).map((m) => ({ author: m.author, text: m.text, kind: m.kind }));
+    return this.group.map(({ id, author, text, kind }) => ({ id, author, text, kind }));
   }
 
   private privateTurns(user: string): PrivateTurn[] {
     const turns: PrivateTurn[] = [];
     for (const item of this.windows.get(user) ?? []) {
-      if (item.type === "user") turns.push({ role: "user", text: item.text });
-      else if (item.type === "agent") turns.push({ role: "agent", text: item.text });
+      if (item.type !== "card") turns.push({ id: item.id, role: item.type, text: item.text });
     }
-    return turns.slice(-this.rules.privateContextTurns);
+    return turns;
   }
 
-  private hasPrivateNotes(user: string): boolean {
-    return (this.windows.get(user) ?? []).some((i) => i.type === "user");
+  private ownerContext(user: string) {
+    return {
+      user, goal: this.goal, group: this.groupContext(), privateHistory: this.privateTurns(user),
+      recentSuggestions: this.cards(user).filter((c): c is ShareSuggestionCard => c.kind === "share_suggestion" && c.source !== "chat"),
+    };
+  }
+
+  private hasOwnerMessages(user: string): boolean {
+    return this.windows.get(user)!.some(i => i.type === "user") ||
+      this.group.some(m => m.kind === "user" && m.author === user && !m.anonymous);
   }
 
   private cooledDown(user: string): boolean {
@@ -462,15 +561,20 @@ export class Meeting {
     this.windows.get(user)!.push({ id: this.nextId("p"), at: this.now(), type: "card", card });
   }
 
-  /** An agent offers a draft. A newer unprompted suggestion replaces an older one that is still open. */
-  private addSuggestion(user: string, source: ShareSuggestionCard["source"], nudge: string, draft: string): void {
+  /** Commit a private draft after checking the latest group and private history for concurrent duplicates. */
+  private addSuggestion(user: string, source: ShareSuggestionCard["source"], nudge: string, draft: string,
+                        evidenceIds: string[], checkId?: string): boolean {
     if (source !== "chat") {
-      for (const c of this.cards(user)) {
-        if (c.kind === "share_suggestion" && c.status === "open" && c.source !== "chat") c.status = "superseded";
-      }
+      const normalize = (s: string) => s.normalize("NFKC").toLowerCase().replace(/[\s\p{P}]+/gu, "");
+      const equivalent = (s: string) => normalize(s) === normalize(draft);
+      if (this.group.some(m => equivalent(m.text)) ||
+          this.cards(user).some(c => c.kind === "share_suggestion" && c.source !== "chat" &&
+            (equivalent(c.draft) || (evidenceIds.length > 0 && c.evidenceIds?.length === evidenceIds.length &&
+             evidenceIds.every(id => c.evidenceIds!.includes(id)))))) return false;
       this.lastProactiveAt.set(user, this.now());
     }
-    this.addCard(user, { kind: "share_suggestion", id: this.nextId("card"), source, nudge, draft, status: "open" });
+    this.addCard(user, { kind: "share_suggestion", id: this.nextId("card"), source, nudge, draft, status: "open", evidenceIds, checkId });
+    return true;
   }
 
   private cards(user: string): Card[] {
@@ -503,7 +607,9 @@ export class Meeting {
   }
 
   private llmLog(who: string): (record: LLMRecord) => void {
-    return (r) => this.log("llm_call", who, "llm", { prompt: r.prompt, input: r.user, output: r.raw, mocked: r.mocked, ms: r.ms });
+    return (r) => this.log("llm_call", who, "llm", this.tracePrompts
+      ? { prompt: r.prompt, input: r.user, output: r.raw, mocked: r.mocked, ms: r.ms }
+      : { prompt: r.prompt, mocked: r.mocked, ms: r.ms });
   }
 }
 

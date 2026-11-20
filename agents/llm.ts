@@ -2,7 +2,7 @@
 //  - reads prompts/<name>.md  (text above "=== INPUT ===" is the system prompt, text below is the input template)
 //  - fills {{variables}}
 //  - calls OpenRouter (or any OpenAI-compatible server) and parses the JSON reply
-//  - mock mode: no API call, the caller's mock function answers instead (free)
+//  - fixture generators can be injected by the test runners only
 
 import fs from "node:fs";
 import path from "node:path";
@@ -27,7 +27,7 @@ loadDotEnv();
 export function settings() {
   const env = process.env;
   const apiKey = env.OPENROUTER_API_KEY || "";
-  const mock = env.LLM_MOCK === "1" || (!apiKey && !env.LLM_BASE_URL);
+  const mock = fixtureGenerator !== undefined;
   return {
     apiKey,
     baseUrl: env.LLM_BASE_URL || "https://openrouter.ai/api/v1",
@@ -37,17 +37,16 @@ export function settings() {
     jsonMode: env.LLM_JSON_MODE !== "0",
     maxTokens: Number(env.LLM_MAX_TOKENS || 1500),
     temperature: env.LLM_TEMPERATURE ? Number(env.LLM_TEMPERATURE) : undefined,
-    timeoutMs: Number(env.LLM_TIMEOUT_MS || 45_000),
+    timeoutMs: Number(env.LLM_TIMEOUT_MS || 65_000),
     dryRun: env.LLM_DRY_RUN === "1",
-    strict: env.LLM_STRICT === "1",
     priceIn: Number(env.LLM_PRICE_IN || 0.25),
     priceOut: Number(env.LLM_PRICE_OUT || 2.0),
   };
 }
 
-export function llmInfo(): { mode: "mock" | "live"; model: string } {
+export function llmInfo(): { mode: "mock" | "unconfigured" | "live"; model: string } {
   const s = settings();
-  return { mode: s.mock ? "mock" : "live", model: s.mock ? "mock" : s.model };
+  return { mode: s.mock ? "mock" : s.apiKey ? "live" : "unconfigured", model: s.mock ? "mock" : PERSONAL_MODEL };
 }
 
 // ---------- usage ----------
@@ -114,95 +113,82 @@ export function extractJSON<T>(raw: string): T {
 // ---------- the call ----------
 
 export type LLMRecord = { prompt: string; system: string; user: string; raw: string; mocked: boolean; ms: number };
-export type CallOpts = { maxTokens?: number; log?: (record: LLMRecord) => void };
 
-async function request(system: string, user: string, maxTokens?: number): Promise<string> {
+type FixtureGenerator = (prompt: string, context: object) => unknown;
+let fixtureGenerator: FixtureGenerator | undefined;
+
+/** Test programs inject their fixture responses here. The HTTP server always uses the provider. */
+export function useFixtureGenerator(generator: FixtureGenerator): void {
+  fixtureGenerator = generator;
+}
+
+export const PERSONAL_MODEL = "openai/gpt-5-mini";
+const OPENROUTER = "https://openrouter.ai/api/v1";
+
+async function complete<T>(
+  prompt: string, system: string, user: string, context: object,
+  log?: (record: LLMRecord) => void, schema?: object,
+): Promise<T> {
   const s = settings();
-  const body: Record<string, unknown> = {
-    model: s.model,
-    messages: [
-      { role: "system", content: system },
-      { role: "user", content: user },
-    ],
-    max_tokens: maxTokens ?? s.maxTokens,
-  };
-  if (s.jsonMode) body.response_format = { type: "json_object" };
-  if (s.reasoningEffort) body.reasoning = { effort: s.reasoningEffort };
-  if (s.temperature !== undefined) body.temperature = s.temperature;
+  const started = Date.now();
+  if (fixtureGenerator) {
+    if (s.dryRun) console.log(prompt, system, user);
+    const data = await fixtureGenerator(prompt, context);
+    usage.mockCalls++;
+    log?.({ prompt, system, user, raw: JSON.stringify(data), mocked: true, ms: Date.now() - started });
+    return data as T;
+  }
 
-  const res = await fetch(`${s.baseUrl}/chat/completions`, {
+  const baseUrl = schema ? OPENROUTER : s.baseUrl;
+  if (!s.apiKey && (schema || baseUrl === OPENROUTER)) throw new Error("OPENROUTER_API_KEY is required on the API server.");
+  const body: Record<string, unknown> = {
+    model: schema ? PERSONAL_MODEL : s.model,
+    messages: [{ role: "system", content: system }, { role: "user", content: user }],
+    max_tokens: schema ? Math.max(2500, s.maxTokens) : s.maxTokens,
+  };
+  if (schema) {
+    body.response_format = { type: "json_schema", json_schema: { name: "personal_action", strict: true, schema } };
+    body.provider = { require_parameters: true };
+  } else if (s.jsonMode) {
+    body.response_format = { type: "json_object" };
+  }
+  if (s.reasoningEffort) body.reasoning = { effort: s.reasoningEffort };
+  if (!schema && s.temperature !== undefined) body.temperature = s.temperature;
+  const response = await fetch(baseUrl + "/chat/completions", {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${s.apiKey || "local"}`,
-      "Content-Type": "application/json",
-      "X-Title": "CrossCheck",
-    },
+    headers: { Authorization: `Bearer ${s.apiKey || "local"}`, "Content-Type": "application/json", "X-Title": "CrossCheck" },
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(s.timeoutMs),
   });
-  const text = await res.text();
-  if (!res.ok) throw new Error(`LLM HTTP ${res.status}: ${text.slice(0, 400)}`);
-  const json = JSON.parse(text) as {
-    error?: { message?: string };
+  if (!response.ok) throw new Error(`Model service returned HTTP ${response.status}.`);
+  const data = await response.json() as {
+    error?: unknown; choices?: { error?: unknown; finish_reason?: string; message?: { content?: string; refusal?: unknown } }[];
     usage?: { prompt_tokens?: number; completion_tokens?: number };
-    choices?: { finish_reason?: string; message?: { content?: string } }[];
   };
-  if (json.error) throw new Error(`LLM error: ${json.error.message ?? text.slice(0, 400)}`);
-  usage.calls++;
-  usage.promptTokens += json.usage?.prompt_tokens ?? 0;
-  usage.completionTokens += json.usage?.completion_tokens ?? 0;
-  const content = json.choices?.[0]?.message?.content;
-  if (!content) {
-    throw new Error(
-      `Empty reply (finish_reason=${json.choices?.[0]?.finish_reason}). ` +
-        "If this is a reasoning model, raise LLM_MAX_TOKENS or lower LLM_REASONING_EFFORT.",
-    );
+  const choice = data.choices?.[0];
+  const raw = choice?.message?.content;
+  if (data.error || choice?.error || choice?.message?.refusal || choice?.finish_reason !== "stop" || typeof raw !== "string") {
+    throw new Error("Model service did not return a completed answer.");
   }
-  return content;
+  usage.calls++;
+  usage.promptTokens += data.usage?.prompt_tokens ?? 0;
+  usage.completionTokens += data.usage?.completion_tokens ?? 0;
+  let result: T;
+  try { result = schema ? JSON.parse(raw) as T : extractJSON<T>(raw); }
+  catch { throw new Error("Model service returned an invalid JSON answer."); }
+  log?.({ prompt, system, user, raw, mocked: false, ms: Date.now() - started });
+  return result;
 }
 
-/**
- * Run one prompt and get its JSON back.
- * `mock` answers instead of the model in mock mode, and is the fallback if the model fails twice
- * (unless LLM_STRICT=1, which the test scripts set so that failures are visible).
- */
-export async function callJSON<T>(
-  prompt: string,
-  vars: Record<string, string | number>,
-  mock: () => T,
-  opts: CallOpts = {},
+export function callJSON<T>(
+  prompt: string, vars: Record<string, string | number>, context: object, log?: (record: LLMRecord) => void,
 ): Promise<T> {
-  const s = settings();
   const tpl = loadPrompt(prompt);
-  const system = fill(tpl.system, vars);
-  const user = fill(tpl.user, vars);
-  const started = Date.now();
-  const done = (data: T, raw: string, mocked: boolean): T => {
-    opts.log?.({ prompt, system, user, raw, mocked, ms: Date.now() - started });
-    return data;
-  };
+  return complete(prompt, fill(tpl.system, vars), fill(tpl.user, vars), context, log);
+}
 
-  if (s.dryRun) {
-    console.log(`\n────────── ${prompt} · SYSTEM ──────────\n${system}\n────────── ${prompt} · INPUT ──────────\n${user}\n`);
-  }
-  if (s.dryRun || s.mock) {
-    usage.mockCalls++;
-    const data = mock();
-    return done(data, JSON.stringify(data), true);
-  }
-
-  let lastError: unknown;
-  for (let attempt = 1; attempt <= 2; attempt++) {
-    try {
-      const raw = await request(system, user, opts.maxTokens);
-      return done(extractJSON<T>(raw), raw, false);
-    } catch (err) {
-      lastError = err;
-    }
-  }
-  if (s.strict) throw lastError;
-  console.error(`[llm] ${prompt} failed twice, using the mock answer instead:`, lastError instanceof Error ? lastError.message : lastError);
-  usage.mockCalls++;
-  const data = mock();
-  return done(data, JSON.stringify(data), true);
+export function callPersonalJSON<T>(
+  prompt: string, context: object, schema: object, log?: (record: LLMRecord) => void,
+): Promise<T> {
+  return complete(prompt, loadPrompt(prompt).system, JSON.stringify(context), context, log, schema);
 }

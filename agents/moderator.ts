@@ -7,7 +7,6 @@
 
 import { callJSON, type LLMRecord } from "./llm";
 import { formatChat, formatList, isUnsure, norm, str, strList } from "./format";
-import * as mocks from "./mocks";
 import type { ChatLine, Comparison, DecisionDetection, MissingAngle } from "./protocol";
 
 type Log = (record: LLMRecord) => void;
@@ -24,8 +23,7 @@ export async function findMissingAngle(input: MissingAngleInput, log?: Log): Pro
       anglesAsked: formatList(input.anglesAsked),
       groupChat: formatChat(input.group),
     },
-    () => mocks.findMissingAngle(input),
-    { log },
+    input, log,
   );
   const angle = str(data.angle);
   const ask = data.action === "ask_angle" && angle.length > 0;
@@ -51,8 +49,7 @@ export async function detectDecision(input: DetectDecisionInput, log?: Log): Pro
       earlierChat: formatChat(input.group.slice(0, -1)),
       newestMessage: newest ? `[${newest.author}] ${newest.text}` : "(none)",
     },
-    () => mocks.detectDecision(input),
-    { log },
+    input, log,
   );
   const options = strList(data.options).slice(0, 4);
   const ok = Boolean(data.is_decision) && str(data.decision).length > 0;
@@ -86,8 +83,7 @@ export async function compareUnderstanding(input: CompareInput, log?: Log): Prom
       answers: formatList(input.labels),
       concerns: formatList(input.concerns),
     },
-    () => mocks.compareUnderstanding(input),
-    { log },
+    input, log,
   );
 
   // Counting is done here, not by the model. The model only groups answers by meaning.

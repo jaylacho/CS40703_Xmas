@@ -26,7 +26,7 @@
     { "do": "answer", "user": "Jiwoo", "prefer": "library" },
 
     { "title": "The team talks it through, decides again, and everyone confirms.", "do": "group", "user": "Taeho", "text": "Thinking about it, cleaning the data for the whole campus would take forever." },
-    { "do": "group", "user": "Minsu", "text": "OK, let's just do the library and the cafeteria." },
+    { "do": "revise", "user": "Minsu", "text": "Pilot the project in the library and the cafeteria." },
     { "do": "answer", "user": "Minsu", "prefer": "library" },
     { "do": "answer", "user": "Taeho", "prefer": "library" },
     { "do": "answer", "user": "Seoyeon", "prefer": "library" },
