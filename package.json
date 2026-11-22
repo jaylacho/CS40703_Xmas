@@ -13,7 +13,8 @@
     "test:personal": "tsx tests/run.ts personal",
     "simulate": "tsx tests/simulate.ts",
     "dev:api": "tsx watch server/index.ts",
-    "start": "tsx server/index.ts"
+    "start": "tsx server/index.ts",
+    "eval:commitment": "tsx tests/eval_commitment.ts"
   },
   "dependencies": {
     "tsx": "^4.19.0"
